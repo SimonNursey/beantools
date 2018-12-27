@@ -4,12 +4,14 @@ import (
 	. "bean"
 	"bean/rpc"
 	"fmt"
+	"math"
 	"os"
 	"time"
 )
 
 type orderAgg struct {
 	Orders []float64
+	Trades []float64
 	Time   time.Time
 }
 
@@ -18,7 +20,7 @@ type orderAggTS struct {
 	Low, High float64
 }
 
-func createGridFromOB(obts OrderBookTS) orderAggTS {
+func createGrid(obts OrderBookTS, txns Transactions) orderAggTS {
 	AggTS := orderAggTS{nil, 9999999.0, 0.0}
 	AggTS.OrderAgg = make([]orderAgg, len(obts))
 
@@ -42,14 +44,21 @@ func createGridFromOB(obts OrderBookTS) orderAggTS {
 		}
 	}
 
+	j := 0
+
 	for i, obt := range obts {
 		AggTS.OrderAgg[i].Time = obt.Time
 		AggTS.OrderAgg[i].Orders = make([]float64, AggTS.priceToIndex(AggTS.High)+1)
+		AggTS.OrderAgg[i].Trades = make([]float64, AggTS.priceToIndex(AggTS.High)+1)
 		for _, lvl := range obt.OB.Bids {
 			AggTS.OrderAgg[i].Orders[AggTS.priceToIndex(lvl.Price)] += lvl.Amount
 		}
 		for _, lvl := range obt.OB.Asks {
 			AggTS.OrderAgg[i].Orders[AggTS.priceToIndex(lvl.Price)] -= lvl.Amount
+		}
+
+		for ; j < len(txns) && txns[j].TimeStamp.Before(obt.Time); j++ {
+			AggTS.OrderAgg[i].Trades[AggTS.priceToIndex(txns[j].Price)] += math.Abs(txns[j].Amount)
 		}
 	}
 
@@ -57,20 +66,22 @@ func createGridFromOB(obts OrderBookTS) orderAggTS {
 }
 
 func (self *orderAggTS) writeGrid(FileName string) {
-	f, _ := os.OpenFile(FileName, os.O_CREATE|os.O_WRONLY, 0644)
+	f, _ := os.Create(FileName)
 	f.WriteString(",")
 	for i := self.priceToIndex(self.Low); i <= self.priceToIndex(self.High); i++ {
-		f.WriteString(fmt.Sprintf("%6.1f,", self.indexToPrice(i)))
+		fmt.Fprintf(f, "%6.1f,", self.indexToPrice(i))
 	}
 	f.WriteString("\n")
 	for _, oagg := range self.OrderAgg {
 		f.WriteString(oagg.Time.Format("15:04:05") + ",")
-		for _, amount := range oagg.Orders {
-			if amount == 0 {
-				f.WriteString(",")
-			} else {
-				f.WriteString(fmt.Sprintf("%6.1f,", amount))
+		for i := range oagg.Orders {
+			if oagg.Orders[i] != 0 {
+				fmt.Fprintf(f, "%6.1f", oagg.Orders[i])
 			}
+			if oagg.Trades[i] > 0 {
+				fmt.Fprintf(f, "(%3.1f)", oagg.Trades[i])
+			}
+			f.WriteString(",")
 		}
 		f.WriteString("\n")
 	}
@@ -90,14 +101,14 @@ func main() {
 	mds := bean.NewRPCMDSConnC("tcp", bean.MDS_HOST_SG40+":"+bean.MDS_PORT)
 	pair := Pair{BTC, USDT}
 
-	start := time.Date(2018, 11, 16, 16, 00, 00, 00, time.Local)
-	end := start.Add(time.Duration(3) * time.Hour)
+	start := time.Date(2018, 12, 01, 00, 40, 00, 00, time.Local)
+	end := start.Add(30 * time.Minute)
 	fmt.Println("Orderbook history from", start.Format("15:04:05"), "to", end.Format("15:04:05"))
 
 	// open book history
 	obts, _ := mds.GetOrderBookTS(pair, start, end, 20)
-	//	txns, _ := mds.GetTransactions(pair, start, end)
+	txns, _ := mds.GetTransactions(pair, start, end)
 
-	orderAggT := createGridFromOB(obts)
+	orderAggT := createGrid(obts, txns)
 	orderAggT.writeGrid("orderAgg.csv")
 }

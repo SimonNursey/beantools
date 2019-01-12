@@ -21,21 +21,22 @@ import (
 const dateLayout = "2/1/2006 15:04:05"
 
 func main() {
+	mds := bean.NewRPCMDSConnC("tcp", bean.MDS_HOST_SG40+":"+bean.MDS_PORT)
 	st := time.Date(2018, 12, 17, 0, 0, 0, 0, time.UTC)
 	en := time.Date(2018, 12, 17, 1, 0, 0, 0, time.UTC)
 	pair := Pair{BTC, USDT}
+	analyseMAPG(st, en, pair, mds)
+	analyseStaticOrders(st, en, pair, mds)
+}
+
+func analyseStaticOrders(st time.Time, en time.Time, pair Pair, mds bean.RPCMDSConnC) {
 	timeWindow := time.Duration(5) * time.Minute // the historic window in which to scan for orders and transactions at the same level
 	// set very high. looking at mapg only.
-	amountThreshold := 999999.0 //10.0                      // this is the minimum total traded amount at a specific level
-	stealthFactor := 2.0        // this is the minimum ratio between the total traded amount and the maximum order amount or maximum trade amount
+	amountThreshold := 10.0 // this is the minimum total traded amount at a specific level
+	stealthFactor := 2.0    // this is the minimum ratio between the total traded amount and the maximum order amount or maximum trade amount
 
 	fIceBerg, _ := os.Create("detector.csv")
 	fmt.Fprintf(fIceBerg, "Type,Time,Level,Traded Amount,Max Trade,Trade Count,Given,Paid,Max Order,Bids,Asks,Subsequent Trades,1min,5min,Profit,Cum Pnl\n")
-
-	fMAPG, _ := os.Create("MAPG.csv")
-	fmt.Fprintf(fMAPG, "Time,Last trade,1min prior,1min MNPG,5min MNPG,next 1min,next 5min\n")
-
-	mds := bean.NewRPCMDSConnC("tcp", bean.MDS_HOST_SG40+":"+bean.MDS_PORT)
 
 	txns, _ := mds.GetTransactions(pair, st, en)
 
@@ -44,19 +45,6 @@ func main() {
 
 	// look for levels that have traded in significant amounts
 	for i, t := range txns {
-		if fMAPG != nil && i > 0 {
-			MNPG1min, _ := movingNetPaidGiven(txns[:i], time.Minute)
-			MNPG5min, _ := movingNetPaidGiven(txns[:i], 5*time.Minute)
-			priceMove1min := txnPriceLater(txns[i:], time.Minute) - t.Price
-			priceMove5min := txnPriceLater(txns[i:], 5*time.Minute) - t.Price
-			priceMovePrior1min := t.Price - txnPriceEarlier(txns[:i], time.Minute)
-			if !math.IsNaN(priceMovePrior1min) && !math.IsNaN(priceMove5min) {
-				fmt.Fprintf(fMAPG, "%s,%7.2f,", t.TimeStamp.Format(dateLayout), t.Price)
-				fmt.Fprintf(fMAPG, "%4.2f,%3.2f,%3.2f,", priceMovePrior1min, MNPG1min, MNPG5min)
-				fmt.Fprintf(fMAPG, "%4.2f,%4.2f\n", priceMove1min, priceMove5min)
-			}
-		}
-
 		if lastReportedLevel == txns[i].Price {
 			continue
 		}
@@ -158,6 +146,32 @@ func main() {
 		}
 	}
 	fIceBerg.Close()
+}
+
+func analyseMAPG(st time.Time, en time.Time, pair Pair, mds bean.RPCMDSConnC) {
+	fMAPG, _ := os.Create("MAPG.csv")
+	fmt.Fprintf(fMAPG, "Time,Last trade,1min prior,1min MNPG,5min MNPG,next 1min,next 5min\n")
+
+	txns, _ := mds.GetTransactions(pair, st, en)
+
+	// look for levels that have traded in significant amounts
+	for i, t := range txns {
+
+		// MAPG - track the moving net paid given amounts within a window. Try to find correlation with subsequent price movement.
+		// should probably strip this into a separate function
+		if fMAPG != nil && i > 0 {
+			MNPG1min, _ := movingNetPaidGiven(txns[:i], time.Minute)
+			MNPG5min, _ := movingNetPaidGiven(txns[:i], 5*time.Minute)
+			priceMove1min := txnPriceLater(txns[i:], time.Minute) - t.Price
+			priceMove5min := txnPriceLater(txns[i:], 5*time.Minute) - t.Price
+			priceMovePrior1min := t.Price - txnPriceEarlier(txns[:i], time.Minute)
+			if !math.IsNaN(priceMovePrior1min) && !math.IsNaN(priceMove5min) {
+				fmt.Fprintf(fMAPG, "%s,%7.2f,", t.TimeStamp.Format(dateLayout), t.Price)
+				fmt.Fprintf(fMAPG, "%4.2f,%3.2f,%3.2f,", priceMovePrior1min, MNPG1min, MNPG5min)
+				fmt.Fprintf(fMAPG, "%4.2f,%4.2f\n", priceMove1min, priceMove5min)
+			}
+		}
+	}
 	fMAPG.Close()
 }
 

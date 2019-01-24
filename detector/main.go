@@ -22,11 +22,11 @@ const dateLayout = "2/1/2006 15:04:05"
 
 func main() {
 	mds := bean.NewRPCMDSConnC("tcp", bean.MDS_HOST_SG40+":"+bean.MDS_PORT)
-	st := time.Date(2018, 12, 17, 0, 0, 0, 0, time.UTC)
-	en := time.Date(2018, 12, 17, 1, 0, 0, 0, time.UTC)
+	st := time.Date(2018, 12, 2, 0, 0, 0, 0, time.UTC)
+	en := time.Date(2018, 12, 3, 0, 0, 0, 0, time.UTC)
 	pair := Pair{BTC, USDT}
 	analyseMAPG(st, en, pair, mds)
-	analyseStaticOrders(st, en, pair, mds)
+	//analyseStaticOrders(st, en, pair, mds)
 }
 
 func analyseStaticOrders(st time.Time, en time.Time, pair Pair, mds bean.RPCMDSConnC) {
@@ -148,26 +148,30 @@ func analyseStaticOrders(st time.Time, en time.Time, pair Pair, mds bean.RPCMDSC
 	fIceBerg.Close()
 }
 
+// MAPG - track the moving net paid given amounts within a window. Try to find correlation with subsequent price movement.
 func analyseMAPG(st time.Time, en time.Time, pair Pair, mds bean.RPCMDSConnC) {
 	fMAPG, _ := os.Create("MAPG.csv")
-	fmt.Fprintf(fMAPG, "Time,Last trade,1min prior,1min MNPG,5min MNPG,next 1min,next 5min\n")
+	fmt.Fprintf(fMAPG, "Time,Last trade,1min prior,1min MNPG,5min ENPG,20min ENPG,next 1min,next 5min\n")
+
+	nextSample := st
+	sampleRate := time.Minute
 
 	txns, _ := mds.GetTransactions(pair, st, en)
 
-	// look for levels that have traded in significant amounts
 	for i, t := range txns {
-
-		// MAPG - track the moving net paid given amounts within a window. Try to find correlation with subsequent price movement.
-		// should probably strip this into a separate function
-		if fMAPG != nil && i > 0 {
-			MNPG1min, _ := movingNetPaidGiven(txns[:i], time.Minute)
-			MNPG5min, _ := movingNetPaidGiven(txns[:i], 5*time.Minute)
+		if nextSample.Before(t.TimeStamp) {
+			for ; nextSample.Before(t.TimeStamp); nextSample = nextSample.Add(sampleRate) {
+			}
+			MNPG1min, _ := movingNetPaidGiven(txns[:i], t.TimeStamp, time.Minute)
+			//			MNPG5min, _ := movingNetPaidGiven(txns[:i], t.TimeStamp, 5*time.Minute)
+			ENPG5min, _ := expNetPaidGiven(txns[:i], t.TimeStamp, 5*time.Minute)
+			ENPG20min, _ := expNetPaidGiven(txns[:i], t.TimeStamp, 20*time.Minute)
 			priceMove1min := txnPriceLater(txns[i:], time.Minute) - t.Price
 			priceMove5min := txnPriceLater(txns[i:], 5*time.Minute) - t.Price
 			priceMovePrior1min := t.Price - txnPriceEarlier(txns[:i], time.Minute)
 			if !math.IsNaN(priceMovePrior1min) && !math.IsNaN(priceMove5min) {
 				fmt.Fprintf(fMAPG, "%s,%7.2f,", t.TimeStamp.Format(dateLayout), t.Price)
-				fmt.Fprintf(fMAPG, "%4.2f,%3.2f,%3.2f,", priceMovePrior1min, MNPG1min, MNPG5min)
+				fmt.Fprintf(fMAPG, "%4.2f,%3.2f,%3.2f,%3.2f,", priceMovePrior1min, MNPG1min, ENPG5min, ENPG20min)
 				fmt.Fprintf(fMAPG, "%4.2f,%4.2f\n", priceMove1min, priceMove5min)
 			}
 		}
@@ -181,19 +185,42 @@ func showPriceAction(txns Transactions) {
 	}
 }
 
-func movingNetPaidGiven(txns Transactions, period time.Duration) (float64, float64) {
+func movingNetPaidGiven(txns Transactions, evalTime time.Time, period time.Duration) (float64, float64) {
 	if len(txns) == 0 {
 		return 0, math.NaN()
 	}
 	totVolPaid := 0.0
 	totVol := 0.0
-	st := txns[len(txns)-1].TimeStamp.Add(-period)
+	st := evalTime.Add(-period)
 	for i := len(txns) - 1; i >= 0 && txns[i].TimeStamp.After(st); i-- {
 		totVol += txns[i].Amount
 		if txns[i].Maker == TraderType(Buyer) {
-			totVolPaid += txns[i].Amount
-		} else {
 			totVolPaid -= txns[i].Amount
+		} else {
+			totVolPaid += txns[i].Amount
+		}
+	}
+	return totVolPaid, totVol
+}
+
+func expNetPaidGiven(txns Transactions, evalTime time.Time, halfLife time.Duration) (float64, float64) {
+	if len(txns) == 0 {
+		return 0, math.NaN()
+	}
+	totVolPaid := 0.0
+	totVol := 0.0
+	st := evalTime.Add(-5 * halfLife)
+	for i := len(txns) - 1; i >= 0 && txns[i].TimeStamp.After(st); i-- {
+		tDiff := evalTime.Sub(txns[i].TimeStamp)
+
+		if tDiff > 0.0 {
+			amt := txns[i].Amount * math.Exp(-tDiff.Seconds()/halfLife.Seconds())
+			totVol += amt
+			if txns[i].Maker == TraderType(Buyer) {
+				totVolPaid -= amt
+			} else {
+				totVolPaid += amt
+			}
 		}
 	}
 	return totVolPaid, totVol

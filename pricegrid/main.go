@@ -101,8 +101,8 @@ func main() {
 	mds := bean.NewRPCMDSConnC("tcp", bean.MDS_HOST_SG40+":"+bean.MDS_PORT)
 	pair := Pair{BTC, USDT}
 
-	start := time.Date(2018, 12, 01, 00, 40, 00, 00, time.Local)
-	end := start.Add(30 * time.Minute)
+	start := time.Date(2018, 12, 6, 04, 30, 00, 00, time.UTC)
+	end := start.Add(60 * time.Minute)
 	fmt.Println("Orderbook history from", start.Format("15:04:05"), "to", end.Format("15:04:05"))
 
 	// open book history

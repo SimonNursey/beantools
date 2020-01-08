@@ -10,7 +10,7 @@ import (
 	"github.com/joho/godotenv"
 )
 
-const deritest = false
+const deritest = true
 
 func main() {
 
@@ -26,9 +26,7 @@ func main() {
 		panic("Error loading deribit.env file")
 	}
 
-	mkt := risk.NewMarket(Pair{BTC, USD})
-
-	exch, err := fix.NewDeribitClient(deritest)
+	exch, err := fix.NewDeribitExchange(deritest)
 	if err != nil {
 		fmt.Printf("Error creating deribit client:%s", err.Error())
 		return
@@ -41,59 +39,45 @@ func main() {
 
 	time.Sleep(5 * time.Second)
 
-	/*	err = exch.InstrumentsRequest()
-		if err != nil {
-			fmt.Printf("Cannot get instruments\n")
-			return
-		}
-		futs := make([]*Contract, 0)
-		for instr := range exch.Instruments {
-			con, err := ContractFromName(instr)
-			if instr == "BTC-DERIBIT-INDEX" || instr == "ETH-DERIBIT-INDEX" {
-				continue
-			}
-			if err != nil {
-				fmt.Println("Unknown instrument" + instr)
-				return
-			}
-			if con.Underlying().Coin == BTC && con.Underlying().Base == USD && !con.IsOption() {
-				futs = append(futs, con)
+	/*	mkt := risk.NewMarket(Pair{BTC, USD})
+		mktMon := func(ch chan *fix.MarketDataNotification) {
+			for md := range ch {
+				con, _ := ContractFromName(md.Instrument)
+				obt := mkt.GetOBT(con)
+				if orderBookUpdate(obt, md) {
+					bid := obt.BestBid()
+					ask := obt.BestAsk()
+					transmitLag := md.RecTime.Sub(obt.Time)
+					processLag := time.Now().Sub(md.RecTime)
+					fmt.Printf("Lag:%v+%v ms %s:%8.2f/%8.2f in %6.0f/%6.0f\n",
+						transmitLag.Nanoseconds()/1e3, processLag.Nanoseconds()/1e3,
+						con.Name(), bid.Price, ask.Price, bid.Amount, ask.Amount)
+				}
 			}
 		}
-		fmt.Printf("%v\n", futs)
-	*/
 
-	mktMon := func(ch chan *fix.MarketDataNotification) {
-		for md := range ch {
-			con, _ := ContractFromName(md.Instrument)
-			obt := mkt.GetOBT(con)
-			if orderBookUpdate(obt, md) {
-				bid := obt.BestBid()
-				ask := obt.BestAsk()
-				transmitLag := md.RecTime.Sub(obt.Time)
-				processLag := time.Now().Sub(md.RecTime)
-				fmt.Printf("Lag:%v+%v ms %s:%8.2f/%8.2f in %6.0f/%6.0f\n",
-					transmitLag.Nanoseconds()/1e3, processLag.Nanoseconds()/1e3,
-					con.Name(), bid.Price, ask.Price, bid.Amount, ask.Amount)
-			}
-		}
-	}
-
-	futch, err := exch.MarketDataRequest([]string{"BTC-PERPETUAL"}) //, "BTC-27MAR20"})
-	if err != nil {
-		fmt.Printf("Cannnot request market data %s\n", err.Error())
-		return
-	}
-	go mktMon(futch)
-
-	/*	optch, err := exch.MarketDataRequest([]string{"BTC-27DEC19-8000-C", "BTC-27MAR20-8000-C"})
+		futch, err := exch.MarketDataRequest([]string{"BTC-PERPETUAL"}) //, "BTC-27MAR20"})
 		if err != nil {
 			fmt.Printf("Cannnot request market data %s\n", err.Error())
 			return
 		}
-		go mktMon(optch)
+		go mktMon(futch)
 	*/
-	stop := time.NewTimer(120 * time.Second)
+
+	stop := time.NewTimer(20 * time.Second)
+
+	go func() {
+		ptf, err := risk.DeribitPortfolio(exch)
+		if err != nil {
+			fmt.Printf("Error getting position:%s", err.Error())
+		}
+		for _, p := range ptf.Positions() {
+			fmt.Println(p)
+		}
+		ptf.ShowBrief()
+
+		stop.Reset(0)
+	}()
 
 	/*	id, ch, err := exch.NewOrder("BTC-PERPETUAL", 100.0, 10000.0, SELL)
 		if err != nil {
